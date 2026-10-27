@@ -1,0 +1,9 @@
+# build artifacts
+/wxctl
+*.o
+
+# runtime / screenshots
+*.ppm
+*.png
+__pycache__/
+.venv/

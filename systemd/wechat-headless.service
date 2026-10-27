@@ -1,0 +1,14 @@
+[Unit]
+Description=WeChat (headless, on Xvfb :@DISPLAY@)
+Requires=xvfb-wx.service
+After=xvfb-wx.service
+
+[Service]
+Type=simple
+Environment=DISPLAY=:@DISPLAY@
+ExecStart=@WECHAT@
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

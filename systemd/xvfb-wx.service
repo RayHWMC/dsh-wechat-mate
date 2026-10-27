@@ -1,0 +1,12 @@
+[Unit]
+Description=Xvfb virtual display :@DISPLAY@ for headless WeChat
+Before=wechat-headless.service
+
+[Service]
+Type=simple
+ExecStart=@PREFIX@/usr/bin/Xvfb :@DISPLAY@ -screen 0 @RES@x24 -nolisten tcp -ac
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
