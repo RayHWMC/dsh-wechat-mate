@@ -23,6 +23,9 @@ import re
 import subprocess
 import sys
 import time
+import tempfile
+from collections import OrderedDict
+from wxlock import display_lock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -38,19 +41,51 @@ TS_RE = re.compile(r"^\s*(\d{1,2}:\d{2}|昨天|星期.|周.|[A-Z][a-z]{2} \d+|\d
 
 def sh(*args):
     env = dict(os.environ, DISPLAY=DISPLAY)
-    return subprocess.run([WXCTL, *map(str, args)], capture_output=True, text=True, env=env)
+    return subprocess.run([WXCTL, *map(str, args)], capture_output=True, text=True, env=env, check=True, timeout=15)
 
 
 def list_hash(win):
-    ppm = "/tmp/wxwatch.ppm"
-    sh("shot", win, ppm)
     from PIL import Image
-    img = Image.open(ppm).convert("L").crop(LIST_REGION)
+    with tempfile.TemporaryDirectory(prefix="wxwatch-") as directory:
+        ppm = os.path.join(directory, "list.ppm")
+        wxread.shot(win, ppm)
+        with Image.open(ppm) as image:
+            img = image.convert("L").crop(LIST_REGION)
     # Binarise: keep ink only, ignore background changes such as the selection
     # highlight. Otherwise opening a chat re-triggers the detector and we end up
     # in an open/close loop.
     img = img.point(lambda p: 255 if p < 140 else 0)
     return hashlib.md5(img.tobytes()).hexdigest()
+
+
+def mentioned_me(text, names):
+    return any(re.search(r"@" + re.escape(name.strip()) + r"(?=$|\s|[，。！？,!?;；:：])", text)
+               for name in names if name.strip())
+
+
+class SnapshotTracker:
+    """Diff visible OCR rows without replaying a whole conversation every 30s."""
+
+    def __init__(self):
+        self.chats = OrderedDict()
+
+    def update(self, chat, baseline=False):
+        key = (bool(chat.get("is_group")), chat.get("chat"))
+        rows = [(m["dir"], m["text"].strip()) for m in chat.get("messages", [])]
+        previous = self.chats.pop(key, None)
+        self.chats[key] = rows
+        if len(self.chats) > 128:
+            self.chats.popitem(last=False)
+        if baseline or not rows:
+            return []
+        if previous is None:
+            # There is no evidence that older visible rows arrived since startup.
+            return rows[-1:]
+        for overlap in range(min(len(previous), len(rows)), 0, -1):
+            if previous[-overlap:] == rows[:overlap]:
+                return rows[overlap:]
+        # No overlap may mean scrolling or an OCR correction; do not replay history.
+        return []
 
 
 def main():
@@ -61,11 +96,15 @@ def main():
     ap.add_argument("--interval", type=float, default=1.5, help="poll interval in seconds")
     ap.add_argument("--probe", type=float, help="exit after N seconds")
     args = ap.parse_args()
+    if args.interval <= 0 or (args.probe is not None and args.probe <= 0):
+        ap.error("interval and probe must be positive")
 
     me = args.me or [os.environ.get("WX_ME", "")]
     win = wxread.find_win()
-    seen = {}
-    last = list_hash(win)
+    tracker = SnapshotTracker()
+    with display_lock():
+        tracker.update(wxread.read_chat(win), baseline=True)
+        last = list_hash(win)
     started = time.time()
     print(f"[wxwatch] watching {win}, polling every {args.interval}s", file=sys.stderr, flush=True)
 
@@ -78,10 +117,10 @@ def main():
             continue
         last = cur
         time.sleep(0.8)                       # let the UI settle
-        sh("activate", win)
         try:
-            chat = wxread.read_chat(win)
-            if not chat.get("chat"):          # no chat open: click the newest row
+            with display_lock():
+                sh("activate", win)
+                # A changed list can belong to another chat even when a chat is open.
                 sh("click", win, *TOP_ROW)
                 time.sleep(1.2)
                 chat = wxread.read_chat(win)
@@ -95,19 +134,14 @@ def main():
             print(f"[wxwatch] read {chat.get('chat')!r}: {len(chat.get('messages', []))} messages",
                   file=sys.stderr, flush=True)
         is_group = chat.get("is_group")
-        for m in chat.get("messages", []):
-            if m["dir"] != "in":
+        for direction, text in tracker.update(chat):
+            if direction != "in":
                 continue
-            text = m["text"].strip()
             if not text or TS_RE.match(text):
                 continue
-            key = (chat.get("chat"), text)
             now = time.time()
-            if now - seen.get(key, 0) < 30:   # do not fire twice for the same message
-                continue
-            seen[key] = now
 
-            mentioned = any(("@" + n) in text for n in me)
+            mentioned = mentioned_me(text, me)
             kind = "dm" if not is_group else ("group_mention" if mentioned else "group_other")
             ev = {"ts": round(now, 3), "kind": kind, "chat": chat.get("chat"),
                   "text": text, "wake": kind in ("dm", "group_mention")}
@@ -119,4 +153,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Never terminate another profile's process; only one watcher owns a display.
+    with display_lock("watcher", blocking=False):
+        main()

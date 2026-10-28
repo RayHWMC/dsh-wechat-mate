@@ -21,6 +21,7 @@ import tempfile
 import subprocess
 import sys
 import time
+from wxlock import display_lock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WXCTL = os.environ.get("WXCTL", os.path.join(HERE, "..", "wxctl"))
@@ -72,6 +73,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--to", help="target chat name (uses the search box; WeChat 4.1's search is a web search, so this is best effort)")
     ap.add_argument("--text", required=True, help="message text")
+    ap.add_argument("--expect-chat", help="refuse to paste/send unless OCR confirms this chat title")
     ap.add_argument("--dry-run", action="store_true", help="fill the input box but do not send")
     ap.add_argument("--shot", default="/tmp/wxsend-last.png")
     args = ap.parse_args()
@@ -92,6 +94,9 @@ def main():
         sh("key", "Return")
         time.sleep(1.5)
 
+    if args.expect_chat:
+        verify_chat(win, args.expect_chat)
+
     sh("click", win, *INPUT_BOX)
     time.sleep(0.3)
     sh("clip", 90, args.text)
@@ -100,6 +105,8 @@ def main():
     time.sleep(0.6)
 
     if not args.dry_run:
+        if args.expect_chat:
+            verify_chat(win, args.expect_chat)
         sh("key", "Return")
         time.sleep(0.8)
 
@@ -107,5 +114,13 @@ def main():
     print(f"{'filled' if args.dry_run else 'sent'} -> {args.to or 'current chat'}  (screenshot: {shot})")
 
 
+def verify_chat(win, expected):
+    from wxread import read_chat
+    actual = read_chat(win).get("chat", "").strip()
+    if not actual or actual != expected.strip():
+        raise RuntimeError(f"destination mismatch: expected {expected!r}, got {actual!r}; nothing sent")
+
+
 if __name__ == "__main__":
-    main()
+    with display_lock():
+        main()
