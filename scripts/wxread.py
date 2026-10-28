@@ -30,6 +30,8 @@ MSG_Y0, MSG_Y1 = 90, 600
 TS_LINE = re.compile(r"^(\d{1,2}:\d{2}|昨天(\s*\d{1,2}:\d{2})?|星期[一二三四五六日天].*|"
                      r"\d{4}年\d{1,2}月\d{1,2}日.*|.+(撤回了一条消息|加入了群聊|邀请.*加入).*)$")
 
+_ocr = None
+
 
 def _env():
     return dict(os.environ, DISPLAY=os.environ.get("WX_DISPLAY", ":99"))
@@ -50,7 +52,11 @@ def shot(win, path):
     raw = path + ".root.ppm"
     subprocess.run([WXCTL, "shot", "root", raw], check=True, env=env, stdout=subprocess.DEVNULL)
     from PIL import Image
-    Image.open(raw).crop((x, y, x + w, y + h)).save(path)
+    try:
+        with Image.open(raw) as image:
+            image.crop((x, y, x + w, y + h)).save(path)
+    finally:
+        os.unlink(raw)
     return path
 
 
@@ -74,10 +80,15 @@ def read_chat(win=None, verbose=False):
     from rapidocr_onnxruntime import RapidOCR
 
     win = win or find_win()
-    ppm = os.path.join(tempfile.gettempdir(), "wxread.ppm")
-    shot(win, ppm)
-    img = Image.open(ppm).convert("RGB")
-    res, _ = RapidOCR()(ppm)
+    global _ocr
+    if _ocr is None:
+        _ocr = RapidOCR()
+    with tempfile.TemporaryDirectory(prefix="wxread-") as directory:
+        ppm = os.path.join(directory, "chat.ppm")
+        shot(win, ppm)
+        with Image.open(ppm) as image:
+            img = image.convert("RGB")
+        res, _ = _ocr(ppm)
     if not res:
         return {"chat": "", "is_group": False, "messages": []}
 

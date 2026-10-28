@@ -111,7 +111,29 @@ Notes:
 
 * The session is created lazily, because `agents.create()` races the agent-loop plugin at startup.
 * `resume` is tried before `create` (a session may exist on disk but not in memory).
-* Every failure is caught and logged; the plugin never breaks the host.
+* Each conversation has a separate session derived from `sessionId`; messages in one
+  chat wait for its current turn to finish. The queue holds at most 100 events.
+* Replies use `--to` and `--expect-chat`. OCR must confirm the exact chat title before
+  pasting and before pressing Enter. An uncertain destination fails without sending.
+* All cooperating watchers/senders share a per-display Linux file lock. One watcher
+  owns each display; the plugin only terminates processes it started.
+* Watcher startup errors and rejected followups are logged. A failed watcher requires
+  restarting the plugin; it is not silently reported as receiving messages.
+* A startup OCR snapshot establishes a baseline. Visible history is not replayed
+  every 30 seconds. For a previously unseen chat only the last visible row is eligible;
+  OCR changes/scrolling without an overlapping snapshot are ignored conservatively.
+
+## Development checks
+
+```bash
+node --test tests/*.test.js
+python3 -m unittest discover -s tests -p 'test_*.py'
+bash -n scripts/install.sh scripts/wxlogin.sh
+```
+
+These tests use simulated process and OCR results. Sending still depends on the
+Linux WeChat UI layout, exact OCR titles, and an already logged-in client. Chat titles
+are not unique account identifiers: avoid duplicate contact/group display names.
 
 ## License
 
