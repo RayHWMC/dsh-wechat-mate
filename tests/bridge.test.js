@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DEFAULTS, start, sessionIdFor } from '../plugin/index.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -141,4 +144,28 @@ test('a turn blocked before user-message admission releases the next request', a
   assert.ok(f.warnings.some(m => m.includes('not admitted')));
   assert.equal(f.sends.length, 0);
   f.runtime.dispose();
+});
+
+test('a verified image reaches the existing DM session and replies to the same chat', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wechat-pipeline-image-'));
+  const f = await fixture();
+  try {
+    const path = join(directory, 'photo.png');
+    await writeFile(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=', 'base64'));
+    const received = new Promise(resolve => {
+      const previous = f.ctx.agents.create;
+      f.ctx.agents.create = async options => {
+        const handle = await previous(options);
+        const followup = handle.agent.followup;
+        handle.agent.followup = async message => { await followup(message); resolve(message); };
+        return handle;
+      };
+    });
+    f.emit({ kind:'image', chatType:'dm', chat:'Alice', path, wake:true });
+    const message = await received;
+    assert.ok(message.content[0].text.includes(JSON.stringify(path)));
+    assert.equal(f.calls[0][1], sessionIdFor(f.cfg, event('Alice')));
+    f.end('Alice', 'I can see the image'); await tick();
+    assert.deepEqual(f.sends[0].slice(1,5), ['--to','Alice','--expect-chat','Alice']);
+  } finally { f.runtime.dispose(); await rm(directory, { recursive:true, force:true }); }
 });

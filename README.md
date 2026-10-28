@@ -23,6 +23,7 @@ Dependencies: Linux + X11 with XTEST + Rust 1.75 or later (Cargo and a system li
 WeChat Linux client installed. The native helper uses `x11rb` and needs no Xlib
 development headers. The installer uses `apt-get download` and `dpkg` to unpack Xvfb.
 For receiving: Python 3 + `rapidocr-onnxruntime` (see below).
+Pillow is used for screenshots and screen-based image capture.
 
 ```bash
 ./scripts/install.sh
@@ -58,7 +59,7 @@ wxwatch.py ──(pixel hash of the chat list, ~1.5s)──► changed ──►
 ```bash
 # OCR deps (pure pip, no root)
 python3 -m venv ~/.local/opt/wxbot/venv
-~/.local/opt/wxbot/venv/bin/pip install rapidocr-onnxruntime
+~/.local/opt/wxbot/venv/bin/pip install rapidocr-onnxruntime 'Pillow>=10,<13'
 
 # inspect the currently open chat
 ~/.local/opt/wxbot/venv/bin/python scripts/wxread.py --json
@@ -163,6 +164,38 @@ xvfb-run -a -s '-screen 0 800x600x24 -nolisten tcp' cargo test --locked --test x
 These tests use simulated process and OCR results. Sending still depends on the
 Linux WeChat UI layout, exact OCR titles, and an already logged-in client. Chat titles
 are not unique account identifiers: avoid duplicate contact/group display names.
+
+## Incoming images (screen-based preview capture)
+
+After a chat-list change, the watcher uses the same OCR screenshot to look for a
+large, textured incoming image bubble. A new candidate is opened with a double-click.
+Only a newly visible Weixin window whose content matches that thumbnail is accepted
+as the preview; an absent or unrelated window produces a diagnostic and no image event.
+The matching preview area is saved as a PNG and the preview is closed.
+
+Direct-message images wake the agent. A group image wakes it only when the newly
+read incoming text also contains one of the configured nickname mentions. Captured
+images and accompanying OCR/caption text produce one event, avoiding a second wake
+for text recognized inside the picture. Text-only chats still use one OCR pass per
+read. Images share the same DSH session and reply destination as text in that chat.
+
+```json
+{"kind":"image","chatType":"dm","chat":"Alice","path":"/home/user/.local/state/dsh-wechat-mate/incoming/wx-incoming-example.png","text":"caption","wake":true}
+```
+
+The plugin checks that `path` is an absolute path to an existing PNG before asking
+the agent to open it. Captures are private files (0600) in a private directory:
+`~/.local/state/dsh-wechat-mate/incoming/`, overridable with `WX_MEDIA_DIR`. Only this
+feature's `wx-incoming-*.png` files older than seven days are pruned when another
+capture succeeds. Baselines and bounded per-chat history suppress old thumbnails.
+
+This is a conservative UI heuristic for the current Linux layout, not attachment
+decryption. Small/flat pictures, image changes without a distinguishable thumbnail,
+and previews that reuse an already visible window can be missed. Stickers that open
+the same preview may work; voice/video/file messages and transcription are not
+implemented. Screenshot resolution is the visible preview resolution. The Xvfb test
+opens a real mock preview through `wxctl` and verifies the saved PNG and cleanup;
+the real-client 15-second acceptance target in issue #9 still needs a target-host run.
 
 ## Rust native helper
 

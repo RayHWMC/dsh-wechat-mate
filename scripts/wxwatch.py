@@ -88,6 +88,25 @@ class SnapshotTracker:
         return []
 
 
+def events_for(chat, rows, captures, names, timestamp=None):
+    """Apply the same DM/group mention policy to text and verified images."""
+    if not chat.get('chat'):
+        return []
+    now = round(time.time() if timestamp is None else timestamp, 3)
+    group = bool(chat.get('is_group'))
+    incoming = [text for direction, text in rows if direction == 'in' and text and not TS_RE.match(text)]
+    mentioned = any(mentioned_me(text, names) for text in incoming)
+    if captures and (not group or mentioned):
+        return [{'ts': now, 'kind': 'image', 'chat': chat['chat'], 'chatType': 'group' if group else 'dm',
+                 'path': path, 'text': '\n'.join(incoming), 'wake': True} for path in captures]
+    events = []
+    for text in incoming:
+        kind = 'dm' if not group else ('group_mention' if mentioned_me(text, names) else 'group_other')
+        events.append({'ts': now, 'kind': kind, 'chat': chat['chat'], 'text': text,
+                       'wake': kind in ('dm', 'group_mention')})
+    return events
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--me", action="append", default=[], help="own nickname(s) used to detect @mentions")
@@ -106,12 +125,16 @@ def main():
 
 
 def watch(args):
+    from wxmedia import MediaTracker, capture_preview
 
     me = args.me or [os.environ.get("WX_ME", "")]
     win = wxread.find_win()
     tracker = SnapshotTracker()
+    media_tracker = MediaTracker()
     with display_lock():
-        tracker.update(wxread.read_chat(win), baseline=True)
+        baseline = wxread.read_chat(win, media=True)
+        tracker.update(baseline, baseline=True)
+        media_tracker.update(baseline, baseline=True)
         last = list_hash(win)
     started = time.time()
     print(f"[wxwatch] watching {win}, polling every {args.interval}s", file=sys.stderr, flush=True)
@@ -134,7 +157,17 @@ def watch(args):
                 # A changed list can belong to another chat even when a chat is open.
                 sh("click", win, *TOP_ROW)
                 time.sleep(1.2)
-                chat = wxread.read_chat(win)
+                chat = wxread.read_chat(win, media=True)
+                rows = tracker.update(chat)
+                images = media_tracker.update(chat)
+                captures = []
+                mention = any(mentioned_me(text, me) for direction, text in rows if direction == 'in')
+                if chat.get('chat') and (not chat.get('is_group') or mention):
+                    for bubble in images:
+                        try:
+                            captures.append(capture_preview(win, bubble))
+                        except Exception as error:
+                            print(f'[wxwatch] image capture failed: {error}', file=sys.stderr, flush=True)
         except Exception as e:                # noqa: BLE001
             print(f"[wxwatch] read failed: {e}", file=sys.stderr, flush=True)
             last = list_hash(win)
@@ -144,18 +177,7 @@ def watch(args):
         if args.verbose:
             print(f"[wxwatch] read {chat.get('chat')!r}: {len(chat.get('messages', []))} messages",
                   file=sys.stderr, flush=True)
-        is_group = chat.get("is_group")
-        for direction, text in tracker.update(chat):
-            if direction != "in":
-                continue
-            if not text or TS_RE.match(text):
-                continue
-            now = time.time()
-
-            mentioned = mentioned_me(text, me)
-            kind = "dm" if not is_group else ("group_mention" if mentioned else "group_other")
-            ev = {"ts": round(now, 3), "kind": kind, "chat": chat.get("chat"),
-                  "text": text, "wake": kind in ("dm", "group_mention")}
+        for ev in events_for(chat, rows, captures, me):
             if ev["wake"] or args.verbose:
                 print(json.dumps(ev, ensure_ascii=False), flush=True)
             if ev["wake"] and args.cmd:

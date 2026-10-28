@@ -9,7 +9,7 @@ const output = JSON.parse(execFileSync(process.execPath, [npm, 'pack', '--dry-ru
 const pack = Array.isArray(output) ? output[0] : Object.values(output)[0];
 const files = new Set(pack.files.map(file => file.path));
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
-for (const file of [pkg.main, 'plugin/client.js', 'plugin/panel.js', 'cordis.patch.yml', 'scripts/wxwatch.py', 'scripts/wxsend.py', 'scripts/wxread.py', 'scripts/wxlock.py', 'Cargo.toml', 'Cargo.lock', 'src/main.rs']) {
+for (const file of [pkg.main, 'plugin/client.js', 'plugin/panel.js', 'cordis.patch.yml', 'scripts/wxwatch.py', 'scripts/wxsend.py', 'scripts/wxread.py', 'scripts/wxlock.py', 'scripts/wxmedia.py', 'Cargo.toml', 'Cargo.lock', 'src/main.rs']) {
   assert.ok(files.has(file), `Missing package file: ${file}`);
 }
 for (const file of files) assert.ok(!/node_modules|__pycache__|\.pyc$|\.ppm$|\.png$|^target\//.test(file), `Unexpected artifact: ${file}`);

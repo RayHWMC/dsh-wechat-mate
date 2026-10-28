@@ -171,3 +171,154 @@ fn malformed_commands_exit_with_errors_without_a_display() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("wxctl:"));
     }
 }
+#[test]
+#[ignore = "run only in an isolated Xvfb display with system python3-pil"]
+fn python_image_capture_opens_a_real_mock_preview() -> Result<()> {
+    use std::process::Stdio;
+    let (conn, screen) = x11rb::connect(None)?;
+    let root = conn.setup().roots[screen].root;
+    let main = conn.generate_id()?;
+    let preview = conn.generate_id()?;
+    let gc = conn.generate_id()?;
+    for (w, width, height, x, y) in [(main, 880, 640, 0, 0), (preview, 600, 420, 100, 80)] {
+        conn.create_window(
+            0,
+            w,
+            root,
+            x,
+            y,
+            width,
+            height,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new()
+                .background_pixel(0xf5f5f5)
+                .event_mask(EventMask::BUTTON_PRESS | EventMask::KEY_PRESS),
+        )?
+        .check()?;
+        conn.change_property8(
+            PropMode::REPLACE,
+            w,
+            AtomEnum::WM_CLASS,
+            AtomEnum::STRING,
+            b"WeixinMock\0Weixin\0",
+        )?
+        .check()?;
+    }
+    conn.create_gc(gc, main, &CreateGCAux::new())?.check()?;
+    let gradient = |scale: usize| -> Vec<u8> {
+        let mut pixels = Vec::new();
+        for y in 0..140 * scale {
+            for x in 0..200 * scale {
+                let (x, y) = (x / scale, y / scale);
+                let (r, g, b) = (
+                    ((x * 3 + y) % 256) as u8,
+                    ((x + y * 2) % 256) as u8,
+                    ((x * 2 + y * 3) % 256) as u8,
+                );
+                pixels.extend_from_slice(&[b, g, r, 0]);
+            }
+        }
+        pixels
+    };
+    conn.map_window(main)?.check()?;
+    conn.put_image(
+        ImageFormat::Z_PIXMAP,
+        main,
+        gc,
+        200,
+        140,
+        356,
+        320,
+        0,
+        24,
+        &gradient(1),
+    )?
+    .check()?;
+    conn.flush()?;
+    let directory = env::temp_dir().join(format!("wxctl-media-{}", std::process::id()));
+    fs::create_dir_all(&directory)?;
+    let script = r#"
+import sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from PIL import Image
+import wxread,wxmedia
+from wxlock import display_lock
+with display_lock():
+ path=str(Path(sys.argv[3])/'main.ppm')
+ wxread.shot(sys.argv[2],path)
+ with Image.open(path) as image: bubbles=wxmedia.find_bubbles(image)
+ assert len(bubbles)==1, f'expected one bubble, got {len(bubbles)}'
+ print(wxmedia.capture_preview(sys.argv[2],bubbles[0],sys.argv[3]),flush=True)
+"#;
+    let mut child = Command::new("/usr/bin/python3")
+        .args([
+            "-c",
+            script,
+            &format!("{}/scripts", env!("CARGO_MANIFEST_DIR")),
+            &format!("0x{main:x}"),
+            directory.to_str().unwrap(),
+        ])
+        .env("WXCTL", env!("CARGO_BIN_EXE_wxctl"))
+        .env("WX_DISPLAY", env::var("DISPLAY")?)
+        .env("HOME", &directory)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut mapped = false;
+    while child.try_wait()?.is_none() && Instant::now() < deadline {
+        while let Some(event) = conn.poll_for_event()? {
+            match event {
+                Event::ButtonPress(e) if e.event == main && !mapped => {
+                    conn.map_window(preview)?.check()?;
+                    conn.put_image(
+                        ImageFormat::Z_PIXMAP,
+                        preview,
+                        gc,
+                        600,
+                        420,
+                        0,
+                        0,
+                        0,
+                        24,
+                        &gradient(3),
+                    )?
+                    .check()?;
+                    conn.flush()?;
+                    mapped = true;
+                }
+                Event::KeyPress(e) if e.event == preview => {
+                    conn.unmap_window(preview)?.check()?;
+                    conn.flush()?;
+                }
+                _ => {}
+            }
+        }
+        sleep(Duration::from_millis(10));
+    }
+    if child.try_wait()?.is_none() {
+        child.kill()?;
+    }
+    let output = child.wait_with_output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(mapped, "the mock application never opened a preview");
+    let path = String::from_utf8(output.stdout)?.trim().to_owned();
+    let data = fs::read(path)?;
+    assert_eq!(&data[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+    assert!(data.len() > 1000);
+    assert_eq!(
+        conn.get_window_attributes(preview)?.reply()?.map_state,
+        MapState::UNMAPPED
+    );
+    conn.destroy_window(main)?.check()?;
+    conn.destroy_window(preview)?.check()?;
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
