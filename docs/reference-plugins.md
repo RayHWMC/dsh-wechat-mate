@@ -19,3 +19,9 @@ Reviewed on 2026-10-28. These are implementation references, not dependencies.
 The bridge remains a local Linux/X11 integration. A settings-panel preview with a
 React harness verifies rendering and persistence, but does not prove a desktop
 profile has activated the plugin or that an actual WeChat client can send messages.
+The installed DSH 0.2.0-rc.2 `SlotCore` also accepted the section registration and
+removed it on disposal in a separate integration check.
+
+The native migration uses [x11rb](https://docs.rs/x11rb/0.13.2/x11rb/), a Rust X11
+protocol implementation. It preserves this project's existing CLI boundary rather
+than introducing a new native module ABI into the DSH host process.

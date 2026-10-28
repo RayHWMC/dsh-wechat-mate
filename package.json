@@ -15,10 +15,12 @@
     "scripts/*.py",
     "scripts/*.sh",
     "systemd",
-    "wxctl.c",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "Cargo.toml",
+    "Cargo.lock",
+    "src/*.rs"
   ],
   "engines": {
     "node": ">=20"

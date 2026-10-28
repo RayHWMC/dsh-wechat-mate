@@ -19,7 +19,9 @@ Using this project carries the risk of your WeChat account being banned; you mus
 
 ## Installation
 
-Dependencies: Linux + X11 + gcc + `libX11`/`libXtst` development headers; WeChat Linux client installed.
+Dependencies: Linux + X11 with XTEST + Rust 1.75 or later (Cargo and a system linker);
+WeChat Linux client installed. The native helper uses `x11rb` and needs no Xlib
+development headers. The installer uses `apt-get download` and `dpkg` to unpack Xvfb.
 For receiving: Python 3 + `rapidocr-onnxruntime` (see below).
 
 ```bash
@@ -144,11 +146,35 @@ Notes:
 node --test tests/*.test.js
 python3 -m unittest discover -s tests -p 'test_*.py'
 bash -n scripts/install.sh scripts/wxlogin.sh
+cargo test --locked
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+# Native integration test in a disposable display (requires Xvfb and xauth):
+xvfb-run -a -s '-screen 0 800x600x24 -nolisten tcp' cargo test --locked --test x11 -- --ignored --test-threads=1
 ```
 
 These tests use simulated process and OCR results. Sending still depends on the
 Linux WeChat UI layout, exact OCR titles, and an already logged-in client. Chat titles
 are not unique account identifiers: avoid duplicate contact/group display names.
+
+## Rust native helper
+
+`wxctl` is implemented in safe Rust (`#![forbid(unsafe_code)]`) using the X11/XTEST
+protocol through `x11rb`. `cargo build --release --locked` builds it; the installer
+copies the result to the existing `./wxctl` path, so Python callers and the `WXCTL`
+override keep working. `Cargo.lock` fixes the dependency versions.
+
+The CLI preserves `find`, `activate`, `key`, `type`, `clip`, `click`, `geom`, and
+`shot`. `type` accepts ASCII; Unicode uses `clip` plus `key ctrl+v`. Clipboard ownership
+lasts 1–3600 seconds and is ready before `clip` returns; a newer owner ends the old
+process. Screenshots are binary PPM on TrueColor displays (including 16/24/32-bit pixel
+storage), with X11 byte order, color masks and row padding respected. Invalid inputs,
+unavailable keys/windows, and output errors exit nonzero.
+
+The Xvfb test creates a mock window and verifies discovery, geometry, keyboard and
+mouse events, released modifiers, screenshot RGB bytes, and Unicode clipboard transfer.
+It does not use an actual WeChat account. Python remains for RapidOCR and UI policy;
+JavaScript remains for DSH's host and browser plugin contracts.
 
 ## License
 
