@@ -1,0 +1,15 @@
+{
+  "name": "@rayhwmc/dsh-wechat-mate",
+  "version": "0.1.0",
+  "description": "WeChat channel for DSH: headless local bridge (Xvfb + XTEST + OCR), wakes the agent on DM / group @me",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js" },
+  "files": ["index.js"],
+  "keywords": ["dsh", "dsh-plugin", "wechat", "cordis"],
+  "license": "MIT",
+  "dsh": {
+    "manifestVersion": 1,
+    "engines": { "dsh": ">=0.1.5-rc.2" }
+  }
+}
