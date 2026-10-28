@@ -50,6 +50,7 @@ export async function start(ctx, cfg, log, io = { spawn, execFile }) {
   let disposed = false;
   const sessions = new Map();
   const pending = new Map();
+  const currentTurns = new Map();
   const queue = [];
   const outgoing = new Set();
   const ownedAgents = new Set();
@@ -111,15 +112,40 @@ export async function start(ctx, cfg, log, io = { spawn, execFile }) {
   }
   const unsubscribe = ctx.on('session/event', (session, raw) => {
     const sid = String(session?.id ?? session?.sessionId ?? session);
+    if (disposed) return;
+    if (raw?.type === 'turn/start' && sessions.has(sid)) {
+      currentTurns.set(sid, raw.data?.turn);
+      const request = pending.get(sid);
+      if (request && request.turn === null) request.candidateTurn = raw.data?.turn;
+      return;
+    }
     const request = pending.get(sid);
-    if (!request || disposed) return;
-    if (raw?.type === 'assistant/message') {
+    if (!request) return;
+    if (raw?.type === 'user/message') {
+      const messageId = raw.data?.id ?? raw.data?.message?.id;
+      if (messageId === request.id && Number.isInteger(currentTurns.get(sid))) request.turn = currentTurns.get(sid);
+      return;
+    }
+    if (raw?.type === 'turn/end' && request.turn === null && request.candidateTurn === raw.data?.turn) {
+      pending.delete(sid);
+      currentTurns.delete(sid);
+      failure(`request was not admitted before turn ended (${raw.data?.reason?.kind ?? 'unknown'})`);
+      void drain();
+      return;
+    }
+    if (request.turn === null || raw?.data?.turn !== request.turn) return;
+    if (raw.type === 'assistant/message') {
+      if (raw.data.interrupted) request.interrupted = true;
       const blocks = raw?.data?.message?.content;
       if (Array.isArray(blocks)) request.text += blocks
         .filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('');
     } else if (raw?.type === 'turn/end') {
       pending.delete(sid);
-      if (cfg.sendReplies && request.text.trim()) send(request.chat, request.text.trim());
+      currentTurns.delete(sid);
+      const reason = raw.data.reason?.kind;
+      if (reason === 'completed' && !request.interrupted) {
+        if (cfg.sendReplies && request.text.trim()) send(request.chat, request.text.trim());
+      } else failure(`reply suppressed: turn ${reason ?? 'unknown'}${request.interrupted ? ' (interrupted)' : ''}`);
       void drain();
     }
   }, { global: true });
@@ -133,17 +159,19 @@ export async function start(ctx, cfg, log, io = { spawn, execFile }) {
         if (index < 0) break;
         const ev = queue.splice(index, 1)[0];
         const sid = sessionIdFor(cfg, ev);
-        const request = { chat: ev.chat, text: '' };
+        const request = { chat: ev.chat, text: '', turn: null, candidateTurn: null, interrupted: false };
         try {
           const agent = await ensureAgent(sid);
           if (disposed) break;
           pending.set(sid, request);
-          health.received += 1;
           const kind = ev.kind === 'dm' ? 'direct message' : 'group message';
-          await agent.followup(createUserMessage({
+          const message = createUserMessage({
             content: [{ type: 'text', text: `[WeChat ${kind} | ${ev.chat}] ${ev.text}\n\nReply with the answer only; the plugin sends it to the source chat.` }],
             source: { kind: 'user' },
-          }));
+          });
+          request.id = message.id;
+          await agent.followup(message);
+          health.received += 1;
         } catch (error) {
           if (pending.get(sid) === request) pending.delete(sid);
           sessions.delete(sid);
@@ -196,6 +224,7 @@ export async function start(ctx, cfg, log, io = { spawn, execFile }) {
     disposed = true;
     queue.length = 0;
     pending.clear();
+    currentTurns.clear();
     sessions.clear();
     const processStopped = new Promise(resolveStop => {
       if (child.exitCode !== null && child.exitCode !== undefined) return resolveStop();

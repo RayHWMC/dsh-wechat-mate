@@ -130,6 +130,8 @@ Notes:
 * `resume` is tried before `create` (a session may exist on disk but not in memory).
 * Each conversation has a separate session derived from `sessionId`; messages in one
   chat wait for its current turn to finish. The queue holds at most 100 events.
+* Replies are correlated with the exact user-message ID and its admitted turn.
+  Earlier desktop turns and incomplete/error/cancelled output are not relayed.
 * Replies use `--to` and `--expect-chat`. OCR must confirm the exact chat title before
   pasting and before pressing Enter. An uncertain destination fails without sending.
 * All cooperating watchers/senders share a per-display Linux file lock. One watcher

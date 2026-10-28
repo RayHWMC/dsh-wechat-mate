@@ -7,13 +7,20 @@ import { DEFAULTS, start, sessionIdFor } from '../plugin/index.js';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const event = (chat, text = '你好') => ({ kind: 'dm', chat, text, wake: true });
 
-async function fixture(followup) {
+async function fixture(followup, admit = true) {
   const ctx = new EventEmitter();
   const child = new EventEmitter();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.kill = () => { child.killed = true; };
   const calls = [], sends = [], warnings = [];
+  const turns = new Map();
+  function admitMessage(sid, message) {
+    const turn = (turns.get(sid) ?? 0) + 1;
+    turns.set(sid, turn);
+    ctx.emit('session/event', { id: sid }, { type: 'turn/start', data: { turn } });
+    ctx.emit('session/event', { id: sid }, { type: 'user/message', data: message });
+  }
   ctx.agents = {
     get: () => null, resume: async () => { throw Error('not saved'); },
     create: async ({ sessionId }) => {
@@ -21,6 +28,7 @@ async function fixture(followup) {
       return { agent: { followup: async message => {
         calls.push(['followup', sessionId, message]);
         if (followup) await followup(sessionId);
+        if (admit) admitMessage(sessionId, message);
       } } };
     },
   };
@@ -34,12 +42,13 @@ async function fixture(followup) {
   };
   const runtime = await start(ctx, cfg, { warn: m => warnings.push(m) }, io);
   const emit = value => child.stdout.write(Buffer.from(JSON.stringify(value) + '\n'));
-  const end = (chat, text) => {
+  const end = (chat, text, reason = 'completed', interrupted = false) => {
     const sid = sessionIdFor(cfg, event(chat));
-    ctx.emit('session/event', { id: sid }, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text }] } } });
-    ctx.emit('session/event', { id: sid }, { type: 'turn/end' });
+    const turn = turns.get(sid);
+    ctx.emit('session/event', { id: sid }, { type: 'assistant/message', data: { turn, interrupted, message: { content: [{ type: 'text', text }] } } });
+    ctx.emit('session/event', { id: sid }, { type: 'turn/end', data: { turn, reason: { kind: reason } } });
   };
-  return { ctx, child, calls, sends, warnings, runtime, emit, end };
+  return { ctx, cfg, child, calls, sends, warnings, runtime, emit, end, admitMessage };
 }
 
 test('isolates chats, serializes each conversation, and targets verified destinations', async () => {
@@ -83,4 +92,45 @@ test('handles asynchronous followup rejection and process errors; disposal stops
   f.runtime.dispose(); f.emit(event('Bob')); await tick();
   assert.equal(f.child.killed, true);
   assert.equal(f.calls.filter(c => c[0] === 'followup').length, 1);
+});
+
+test('waits for the exact message admission and ignores a previous desktop turn', async () => {
+  const f = await fixture(null, false);
+  f.emit(event('Alice')); await tick();
+  const [, sid, message] = f.calls.find(c => c[0] === 'followup');
+  f.ctx.emit('session/event', { id: sid }, { type: 'assistant/message', data: {
+    turn: 99, message: { content: [{ type: 'text', text: 'unrelated desktop output' }] },
+  } });
+  f.ctx.emit('session/event', { id: sid }, { type: 'turn/end', data: { turn: 99, reason: { kind: 'completed' } } });
+  await tick(); assert.equal(f.sends.length, 0);
+  f.admitMessage(sid, message); f.end('Alice', 'correct reply'); await tick();
+  assert.equal(f.sends[0].at(-1), 'correct reply');
+  f.runtime.dispose();
+});
+
+test('suppresses aborted, failed, blocked and interrupted output, and unblocks the queue', async () => {
+  for (const [reason, interrupted] of [['error', false], ['aborted', false], ['blocked', false], ['completed', true]]) {
+    const f = await fixture();
+    f.emit(event('Alice')); f.emit(event('Alice', 'next')); await tick();
+    f.end('Alice', 'partial text', reason, interrupted); await tick();
+    assert.equal(f.sends.length, 0);
+    assert.ok(f.warnings.some(m => m.includes('reply suppressed')));
+    assert.equal(f.calls.filter(c => c[0] === 'followup').length, 2);
+    f.end('Alice', 'next reply'); await tick();
+    assert.equal(f.sends[0].at(-1), 'next reply');
+    f.runtime.dispose();
+  }
+});
+
+test('a turn blocked before user-message admission releases the next request', async () => {
+  const f = await fixture(null, false);
+  f.emit(event('Alice')); f.emit(event('Alice', 'next')); await tick();
+  const [, sid] = f.calls.find(c => c[0] === 'followup');
+  f.ctx.emit('session/event', { id: sid }, { type: 'turn/start', data: { turn: 1 } });
+  f.ctx.emit('session/event', { id: sid }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'blocked' } } });
+  await tick();
+  assert.equal(f.calls.filter(c => c[0] === 'followup').length, 2);
+  assert.ok(f.warnings.some(m => m.includes('not admitted')));
+  assert.equal(f.sends.length, 0);
+  f.runtime.dispose();
 });
