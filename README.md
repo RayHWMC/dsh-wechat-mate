@@ -80,6 +80,39 @@ the steady state is a cheap pixel hash.
 > `org.freedesktop.Notifications.Notify` on incoming messages (the strings are in the binary, but the call
 > is not made), so listening on D-Bus does not work. OCR is the fallback that actually works.
 
+## DSH plugin (`plugin/`)
+
+A minimal DSH plugin that wires the bridge into DSH as a channel: inbound events wake a
+dedicated session, and the assistant's reply is sent back to WeChat at `turn/end`.
+
+```text
+wxwatch.py ──event──► ensureAgent() ──followup──► DSH agent ──turn/end──► wxsend.py ──► WeChat
+```
+
+Register it in the profile (`~/.dsh/profiles/<profile>/cordis.patch.yml`):
+
+```yaml
+- insert:
+    - id: im-wechat
+      name: '@yourscope/dsh-wechat-mate'
+      config:
+        repo: '/path/to/dsh-wechat-mate'
+        python: '/path/to/venv/bin/python'   # interpreter with rapidocr-onnxruntime
+        display: ':99'
+        me: ['your-nickname']                # used to detect group @mentions
+        sessionId: 'wechat'                  # session that gets woken
+        cwd: '/path/to/workspace'
+        preset: 'standard'
+        provider: 'deepseek-account'         # agent.options.model must be set,
+        model: 'deepseek-flash'              # otherwise {{model}} is empty and turns fail
+```
+
+Notes:
+
+* The session is created lazily, because `agents.create()` races the agent-loop plugin at startup.
+* `resume` is tried before `create` (a session may exist on disk but not in memory).
+* Every failure is caught and logged; the plugin never breaks the host.
+
 ## License
 
 MIT

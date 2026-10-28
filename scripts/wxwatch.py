@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""wxwatch —— 轮询无头微信，发现新消息就判定「要不要叫醒 agent」。
+"""wxwatch — poll the headless WeChat client and decide whether to wake the agent.
 
-逻辑（和 QQ 机器人一致）：
-  * 私聊            -> wake
-  * 群里 @我        -> wake
-  * 群里普通消息    -> 忽略
-  * 自己发的        -> 忽略
+Same rule as the QQ bot:
+  * direct message        -> wake
+  * group message @me     -> wake
+  * other group messages  -> ignore
+  * our own messages      -> ignore
 
-实现：便宜的变化检测（对会话列表区域做像素哈希）-> 有变化才 OCR 一次当前会话，
-所以常态零 OCR 开销。
+Implementation: a cheap change detector (pixel hash of the chat list) gates the OCR,
+so the steady state costs almost nothing.
 
-用法：
-  ~/.local/opt/wxbot/venv/bin/python scripts/wxwatch.py --me 肥鱼
-  ... --exec ./on-wake.sh        # 命中时执行命令，事件 JSON 从 stdin 进
-  ... --verbose                  # 不命中的也打印
+Usage:
+  ~/.local/opt/wxbot/venv/bin/python scripts/wxwatch.py --me <nickname>
+  ... --exec ./on-wake.sh        # run a command on wake, event JSON on stdin
+  ... --verbose                  # also print non-waking events
 """
 import argparse
 import hashlib
@@ -30,8 +30,9 @@ import wxread  # noqa: E402
 
 WXCTL = os.environ.get("WXCTL", os.path.join(HERE, "..", "wxctl"))
 DISPLAY = os.environ.get("WX_DISPLAY", ":99")
-TOP_ROW = (150, 110)          # 会话列表第一行的相对坐标
+TOP_ROW = (150, 110)          # first row of the chat list (window coordinates)
 LIST_REGION = (60, 85, 300, 560)
+# Timestamp-only lines (Chinese and English locale) are not messages.
 TS_RE = re.compile(r"^\s*(\d{1,2}:\d{2}|昨天|星期.|周.|[A-Z][a-z]{2} \d+|\d{4}年.*)\s*$")
 
 
@@ -45,27 +46,28 @@ def list_hash(win):
     sh("shot", win, ppm)
     from PIL import Image
     img = Image.open(ppm).convert("L").crop(LIST_REGION)
-    # 二值化：只保留文字笔画，忽略「选中高亮/未读底色」这类背景变化，
-    # 否则点开会话造成的底色变化会自己触发自己，形成点开-关闭的死循环
+    # Binarise: keep ink only, ignore background changes such as the selection
+    # highlight. Otherwise opening a chat re-triggers the detector and we end up
+    # in an open/close loop.
     img = img.point(lambda p: 255 if p < 140 else 0)
     return hashlib.md5(img.tobytes()).hexdigest()
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--me", action="append", default=[], help="自己的昵称，可多次给")
-    ap.add_argument("--exec", dest="cmd", help="命中时执行，事件 JSON 从 stdin 进")
+    ap.add_argument("--me", action="append", default=[], help="own nickname(s) used to detect @mentions")
+    ap.add_argument("--exec", dest="cmd", help="run this command on wake; event JSON on stdin")
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--interval", type=float, default=1.5, help="轮询间隔秒")
-    ap.add_argument("--probe", type=float, help="跑 N 秒后退出")
+    ap.add_argument("--interval", type=float, default=1.5, help="poll interval in seconds")
+    ap.add_argument("--probe", type=float, help="exit after N seconds")
     args = ap.parse_args()
 
-    me = args.me or ["肥鱼"]
+    me = args.me or [os.environ.get("WX_ME", "")]
     win = wxread.find_win()
     seen = {}
     last = list_hash(win)
     started = time.time()
-    print(f"[wxwatch] 监听 {win}，每 {args.interval}s 检查一次", file=sys.stderr, flush=True)
+    print(f"[wxwatch] watching {win}, polling every {args.interval}s", file=sys.stderr, flush=True)
 
     while True:
         if args.probe and time.time() - started > args.probe:
@@ -75,22 +77,22 @@ def main():
         if cur == last:
             continue
         last = cur
-        time.sleep(0.8)                       # 等界面稳定
+        time.sleep(0.8)                       # let the UI settle
         sh("activate", win)
         try:
             chat = wxread.read_chat(win)
-            if not chat.get("chat"):          # 聊天区没开，点开最新会话
+            if not chat.get("chat"):          # no chat open: click the newest row
                 sh("click", win, *TOP_ROW)
                 time.sleep(1.2)
                 chat = wxread.read_chat(win)
         except Exception as e:                # noqa: BLE001
-            print(f"[wxwatch] 读取失败: {e}", file=sys.stderr, flush=True)
+            print(f"[wxwatch] read failed: {e}", file=sys.stderr, flush=True)
             last = list_hash(win)
             continue
-        last = list_hash(win)                 # 读完后重新基线（选中态会改列表）
+        last = list_hash(win)                 # re-baseline (selection changes the list)
 
         if args.verbose:
-            print(f"[wxwatch] 读到会话 {chat.get('chat')!r}：{len(chat.get('messages', []))} 条",
+            print(f"[wxwatch] read {chat.get('chat')!r}: {len(chat.get('messages', []))} messages",
                   file=sys.stderr, flush=True)
         is_group = chat.get("is_group")
         for m in chat.get("messages", []):
@@ -101,7 +103,7 @@ def main():
                 continue
             key = (chat.get("chat"), text)
             now = time.time()
-            if now - seen.get(key, 0) < 30:   # 同一条消息 30 秒内不重复触发
+            if now - seen.get(key, 0) < 30:   # do not fire twice for the same message
                 continue
             seen[key] = now
 

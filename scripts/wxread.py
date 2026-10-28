@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""wxread —— 把无头微信当前会话「读」出来（截图 + OCR，不碰数据库、不碰协议）。
+"""wxread — read the currently open WeChat chat from a headless client (screenshot + OCR).
 
-输出 JSON：
+No database access, no protocol: it screenshots the window and OCRs it.
+
+Output:
   {"chat": "Admin", "is_group": false, "messages": [{"dir": "in", "text": "Ping"}, ...]}
 
-判定：
-  * 会话标题 = 聊天区最上面那行
-  * 组聊判定 = 标题里带 "(N)" 成员数
-  * 消息方向 = 气泡底色（微信自己发的绿 #95EC69；收到的浅灰/白）
+Heuristics:
+  * chat title  = the topmost line inside the chat pane
+  * group chat  = title ends with "(N)" (member count)
+  * direction   = bubble background colour (own messages are green #95EC69)
 """
 import argparse
 import json
@@ -20,9 +22,11 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 WXCTL = os.environ.get("WXCTL", os.path.join(HERE, "..", "wxctl"))
 
-CHAT_X0 = 300          # 聊天区左边界（窗口坐标）
-TITLE_Y_MAX = 80       # 标题行
+CHAT_X0 = 300          # left edge of the chat pane (window coordinates)
+TITLE_Y_MAX = 80       # title row
 MSG_Y0, MSG_Y1 = 90, 600
+# Chinese UI strings that are not messages: "yesterday", weekday, full dates and
+# system notices (recalled a message / joined the group / invited someone).
 TS_LINE = re.compile(r"^(\d{1,2}:\d{2}|昨天(\s*\d{1,2}:\d{2})?|星期[一二三四五六日天].*|"
                      r"\d{4}年\d{1,2}月\d{1,2}日.*|.+(撤回了一条消息|加入了群聊|邀请.*加入).*)$")
 
@@ -32,7 +36,11 @@ def _env():
 
 
 def shot(win, path):
-    """截 root 再按窗口矩形裁（直接截窗口会漏掉子窗口，比如聊天区）"""
+    """Capture the root window and crop to the window rect.
+
+    Capturing the window itself misses child windows (the chat pane is one),
+    which show up as a black rectangle.
+    """
     env = _env()
     out = subprocess.run([WXCTL, "geom", win], capture_output=True, text=True, env=env).stdout.split()
     if len(out) != 4:
@@ -53,7 +61,7 @@ def find_win():
         m = re.match(r"(0x[0-9a-f]+)\s+(\d+)x(\d+)", line)
         if m and int(m.group(2)) > 600 and int(m.group(3)) > 600:
             return m.group(1)
-    sys.exit("找不到微信主窗口")
+    sys.exit("WeChat main window not found")
 
 
 def is_green(px):
@@ -86,9 +94,9 @@ def read_chat(win=None, verbose=False):
             continue
         if y0 < MSG_Y0 or y0 > MSG_Y1:
             continue
-        if TS_LINE.match(text.strip()):      # 时间戳/系统提示，不是消息
+        if TS_LINE.match(text.strip()):      # timestamp / system notice, not a message
             continue
-        # 气泡底色判定方向：在文字行中间扫一段，看有没有绿色
+        # Direction: scan the middle of the text row for the green bubble colour.
         yc = int((min(ys) + max(ys)) / 2)
         outgoing = False
         for x in range(max(CHAT_X0 + 10, x0 - 30), min(img.width, x0 + 200), 4):
@@ -98,11 +106,11 @@ def read_chat(win=None, verbose=False):
         msgs.append({"dir": "out" if outgoing else "in", "text": text.strip(), "y": y0})
 
     msgs.sort(key=lambda m: m["y"])
-    # 相邻同方向的短行合并（一条消息换行会被 OCR 拆开）
+    # Merge consecutive lines in the same direction (a wrapped message is split by OCR).
     merged = []
     for m in msgs:
         if merged and merged[-1]["dir"] == m["dir"] and m["y"] - merged[-1]["y"] < 30:
-            merged[-1]["text"] += m["text"] if merged[-1]["text"].endswith(("-", "/")) else m["text"]
+            merged[-1]["text"] += m["text"]
         else:
             merged.append(dict(m))
     is_group = bool(re.search(r"\(\d+\)\s*$", title))
@@ -115,8 +123,8 @@ def read_chat(win=None, verbose=False):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--json", action="store_true", help="只输出 JSON")
-    ap.add_argument("--win", help="窗口 id")
+    ap.add_argument("--json", action="store_true", help="print JSON only")
+    ap.add_argument("--win", help="window id")
     args = ap.parse_args()
     out = read_chat(args.win, verbose=not args.json)
     if args.json:

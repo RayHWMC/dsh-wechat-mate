@@ -1,14 +1,18 @@
 /**
- * im-wechat — DSH 插件：把「无头微信本机桥」接成 DSH 的一个通道。
+ * im-wechat — a DSH plugin that turns the headless WeChat bridge into a DSH channel.
  *
- * 入站：起子进程跑 scripts/wxwatch.py（只在「私聊」或「群里 @我」时输出事件），
- *       事件文本用 agent.followup() 塞进专属会话，唤醒 DSH。
- * 出站：监听该会话的 session/event，回合结束时把 assistant 正文用 wxsend.py 发回微信。
+ * Inbound:  spawns scripts/wxwatch.py, which only emits events for direct messages
+ *           and for group messages that @mention us; each event is pushed into a
+ *           dedicated session through agent.followup(), which wakes the agent.
+ * Outbound: listens to session/event on that session and, at turn/end, sends the
+ *           assistant text back to WeChat via scripts/wxsend.py.
  *
- * 设计要点：
- *   · 会话是**懒创建**的 —— 插件 apply 时 agent-loop 可能还没注册，
- *     直接 agents.create() 会报 "no agent factory registered"。
- *   · 所有失败都吞掉并打日志，绝不影响宿主启动。
+ * Notes:
+ *   - The session is created lazily: when apply() runs, the agent-loop plugin may not
+ *     be registered yet, and agents.create() throws "no agent factory registered".
+ *   - A session needs an agent preset and a model route, otherwise the prompt variable
+ *     {{model}} has no value and every turn fails with "this turn failed".
+ *   - Everything is wrapped in try/catch: this plugin must never break the host.
  */
 import { spawn, execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -21,8 +25,12 @@ const DEFAULTS = {
   repo: '/home/admin/Dev/dsh-wechat-mate',
   python: '/home/admin/.local/opt/wxbot/venv/bin/python',
   display: ':99',
-  me: ['肥鱼'],
-  sessionId: 'wechat-mate',
+  me: [],   // your own WeChat nickname(s); set it so group @mentions are detected
+  sessionId: 'wechat',
+  cwd: '/home/admin/dsh',
+  preset: 'standard',
+  provider: 'deepseek-account',
+  model: 'deepseek-flash',
   sendReplies: true,
 };
 
@@ -33,14 +41,14 @@ async function loadUserMessageFactory(log) {
     const mod = await import('@deepseek-ai/dsh-llm');
     if (typeof mod?.createUserMessage === 'function') userMessageFactory = mod.createUserMessage;
   } catch (e) {
-    log.warn?.(`[im-wechat] 没加载到 @deepseek-ai/dsh-llm，退化使用纯对象: ${e?.message || e}`);
+    log.warn?.(`[im-wechat] could not load @deepseek-ai/dsh-llm, falling back to a plain object: ${e?.message || e}`);
   }
 }
 
 function makeUserMessage(ev) {
-  const kind = ev.kind === 'dm' ? '私聊' : '群聊';
-  const text = `[微信 ${kind} | ${ev.chat}] ${ev.text}\n\n` +
-    '（这是微信里别人发来的消息，直接回复内容本身，不要解释；回复会由插件发回微信。）';
+  const kind = ev.kind === 'dm' ? 'direct message' : 'group message';
+  const text = `[WeChat ${kind} | ${ev.chat}] ${ev.text}\n\n` +
+    '(This came from WeChat. Reply with the answer only; the plugin sends it back to WeChat.)';
   const payload = { content: [{ type: 'text', text }], source: { kind: 'user' } };
   return userMessageFactory ? userMessageFactory(payload) : payload;
 }
@@ -51,8 +59,8 @@ function sendToWeChat(cfg, text, log) {
       env: { ...process.env, WX_DISPLAY: cfg.display },
       timeout: 90_000,
     }, (err, _stdout, stderr) => {
-      if (err) log.warn?.(`[im-wechat] 发送失败: ${err.message} ${stderr ?? ''}`);
-      else log.info?.(`[im-wechat] 已回微信: ${text.slice(0, 30)}…`);
+      if (err) log.warn?.(`[im-wechat] send failed: ${err.message} ${stderr ?? ''}`);
+      else log.info?.(`[im-wechat] sent to WeChat: ${text.slice(0, 30)}…`);
       resolve(!err);
     });
   });
@@ -63,13 +71,13 @@ export async function apply(ctx, config) {
   try {
     await start(ctx, { ...DEFAULTS, ...(config ?? {}) }, log);
   } catch (e) {
-    log.error?.(`[im-wechat] 启动失败（不影响其他插件）: ${e?.stack || e}`);
+    log.error?.(`[im-wechat] startup failed (other plugins unaffected): ${e?.stack || e}`);
   }
 }
 
 async function start(ctx, cfg, log) {
   if (!existsSync(join(cfg.repo, 'scripts/wxwatch.py'))) {
-    log.warn?.(`[im-wechat] 找不到 ${cfg.repo}/scripts/wxwatch.py，跳过`);
+    log.warn?.(`[im-wechat] ${cfg.repo}/scripts/wxwatch.py not found, skipping`);
     return;
   }
   await loadUserMessageFactory(log);
@@ -78,30 +86,71 @@ async function start(ctx, cfg, log) {
   let agent = null;
   let turnFromWeChat = 0;
 
-  /** 懒取会话：第一次要唤醒的时候才建，避免和 agent-loop 的加载顺序打架 */
+  /** Resolve the session on demand: creating it at apply() time races the agent-loop plugin. */
   async function ensureAgent() {
     if (agent) return agent;
     try {
       const existing = agents.get(cfg.sessionId);
       if (existing) { agent = existing; return agent; }
-    } catch { /* 没有就算了 */ }
-    for (let i = 0; i < 3; i += 1) {
+    } catch { /* not live, fall through */ }
+
+    // The session may exist on disk only (it is not in memory after a restart):
+    // try resume before create.
+    try {
+      const h = await agents.resume({
+        resumeSessionId: cfg.sessionId,
+        agentOptions: { provider: cfg.provider, model: cfg.model },
+      }).catch(() => undefined);
+      if (h?.agent) {
+        agent = h.agent;
+        log.info?.(`[im-wechat] session resumed: ${cfg.sessionId}`);
+        return agent;
+      }
+    } catch (e) {
+      log.warn?.(`[im-wechat] resume failed: ${e?.message || e}`);
+    }
+
+    // A new session must carry a preset, otherwise persona variables such as
+    // {{model}} stay empty and every turn fails.
+    let meta = { cwd: cfg.cwd };
+    let setup;
+    try {
+      const presets = ctx.get?.('agentPresets');
+      if (presets) {
+        const resolved = await presets.resolve(cfg.preset);
+        if (resolved?.id) {
+          meta = { ...meta, agentPreset: resolved.id };
+          setup = async (agentCtx) => { await presets.mount(agentCtx, resolved.id); };
+        }
+      } else {
+        log.warn?.('[im-wechat] host has no agentPresets service; the session may lack a persona/model');
+      }
+    } catch (e) {
+      log.warn?.(`[im-wechat] resolving preset ${cfg.preset} failed: ${e?.message || e}`);
+    }
+
+    for (let i = 0; i < 2; i += 1) {
       try {
-        const created = await agents.create({ sessionId: cfg.sessionId, meta: { cwd: cfg.repo } });
+        const created = await agents.create({
+          sessionId: cfg.sessionId,
+          meta,
+          agentOptions: { provider: cfg.provider, model: cfg.model },
+          ...(setup ? { setup } : {}),
+        });
         if (created?.agent) {
           agent = created.agent;
-          log.info?.(`[im-wechat] 会话已创建: ${cfg.sessionId}`);
+          log.info?.(`[im-wechat] session created: ${cfg.sessionId}`);
           return agent;
         }
       } catch (e) {
-        log.warn?.(`[im-wechat] 建会话失败(${i + 1}/3): ${e?.message || e}`);
-        await new Promise((r) => setTimeout(r, 1500));
+        log.warn?.(`[im-wechat] create failed (${i + 1}/2): ${e?.message || e}`);
+        await new Promise((r) => setTimeout(r, 800));
       }
     }
     return null;
   }
 
-  // ── 出站 ──
+  // ── Outbound: when a turn of our session ends, send the assistant text back ──
   let buf = '';
   ctx.on('session/event', (session, raw) => {
     const sid = session?.id ?? session?.sessionId ?? session;
@@ -122,7 +171,7 @@ async function start(ctx, cfg, log) {
     }
   });
 
-  // ── 入站：先杀掉可能残留的 watcher，避免多份同时点界面 ──
+  // ── Inbound: kill any stale watcher first so only one process clicks the UI ──
   try { spawn('pkill', ['-f', 'dsh-wechat-mate/scripts/wxwatch.py'], { stdio: 'ignore' }); } catch { /* ignore */ }
 
   const child = spawn(cfg.python,
@@ -142,19 +191,19 @@ async function start(ctx, cfg, log) {
       let ev;
       try { ev = JSON.parse(line); } catch { continue; }
       if (!ev?.wake || !ev.text) continue;
-      log.info?.(`[im-wechat] 唤醒: ${ev.kind} ${ev.chat}: ${ev.text.slice(0, 40)}`);
+      log.info?.(`[im-wechat] wake: ${ev.kind} ${ev.chat}: ${ev.text.slice(0, 40)}`);
       const a = await ensureAgent();
-      if (!a) { log.warn?.('[im-wechat] 没有可用会话，跳过这条'); continue; }
+      if (!a) { log.warn?.('[im-wechat] no session available, dropping this event'); continue; }
       try {
         a.followup(makeUserMessage(ev));
         turnFromWeChat += 1;
       } catch (e) {
-        log.warn?.(`[im-wechat] 唤醒失败: ${e?.message || e}`);
+        log.warn?.(`[im-wechat] followup failed: ${e?.message || e}`);
       }
     }
   });
 
-  child.on('exit', (code) => log.warn?.(`[im-wechat] wxwatch 退出 code=${code}`));
+  child.on('exit', (code) => log.warn?.(`[im-wechat] wxwatch exited code=${code}`));
   ctx.on('dispose', () => { try { child.kill(); } catch { /* ignore */ } });
-  log.info?.(`[im-wechat] 就绪：监听 ${cfg.display}，会话 ${cfg.sessionId}`);
+  log.info?.(`[im-wechat] ready: watching ${cfg.display}, session ${cfg.sessionId}`);
 }
