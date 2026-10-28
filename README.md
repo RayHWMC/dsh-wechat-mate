@@ -135,7 +135,12 @@ Notes:
 * Replies use `--to` and `--expect-chat`. OCR must confirm the exact chat title before
   pasting and before pressing Enter. An uncertain destination fails without sending.
 * All cooperating watchers/senders share a per-display Linux file lock. One watcher
-  owns each display; the plugin only terminates processes it started.
+  owns each display. A watcher stops when its owning host disappears. Startup can
+  recover an orphan only after checking the kernel's lock owner, exact repository
+  script, user, display, and reparenting to Linux init/WSL's relay; a pidfd prevents
+  PID reuse during termination. Active owners and other displays remain untouched.
+  If ownership cannot be established (or pidfds are unavailable), stop the old host
+  manually; there is no process-name-wide cleanup.
 * Watcher startup errors and rejected followups are logged. A failed watcher requires
   restarting the plugin; it is not silently reported as receiving messages.
 * A startup OCR snapshot establishes a baseline. Visible history is not replayed

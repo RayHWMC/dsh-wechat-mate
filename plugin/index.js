@@ -184,16 +184,9 @@ export async function start(ctx, cfg, log, io = { spawn, execFile }) {
     } finally { draining = false; }
   }
 
-  // A watcher started by a previous host run can survive a restart and keep the
-  // watcher lock, which makes the fresh instance exit(1) immediately. Kill stale
-  // watchers for this bridge before starting a new one.
-  try {
-    const cleaner = io.spawn('pkill', ['-f', 'dsh-wechat-mate/scripts/wxwatch.py'], { stdio: 'ignore' });
-    cleaner?.on?.('error', () => {});
-  } catch { /* pkill missing: harmless */ }
-
   const child = io.spawn(cfg.python,
-    [join(cfg.repo, 'scripts/wxwatch.py'), ...cfg.me.filter(n => n.trim()).flatMap(n => ['--me', n])],
+    [join(cfg.repo, 'scripts/wxwatch.py'), '--parent-pid', String(process.pid),
+      ...cfg.me.filter(n => n.trim()).flatMap(n => ['--me', n])],
     { env: { ...process.env, WX_DISPLAY: cfg.display }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.on('error', error => { health.phase = 'error'; failure(error); });
   child.on('exit', code => {

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import vm from 'node:vm';
-import { DEFAULTS } from '../plugin/index.js';
+import { DEFAULTS, apply } from '../plugin/index.js';
 import { API, createPanelHost, validateSettings } from '../plugin/panel.js';
 
 test('validates settings and rejects unknown keys or wrong types', () => {
@@ -14,6 +14,17 @@ test('validates settings and rejects unknown keys or wrong types', () => {
   for (const patch of [{ enabled: 'false' }, { python: '' }, { me: 'Alice' }, { unknown: 1 }, []]) {
     assert.throws(() => validateSettings(patch));
   }
+});
+
+test('host apply resolves to undefined, as required by Cordis effects', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'wechat-apply-'));
+  try {
+    const ctx = new EventEmitter();
+    ctx.get = () => undefined;
+    ctx.logger = {};
+    assert.equal(await apply(ctx, { enabled: false, settingsFile: join(directory, 'settings.json') }), undefined);
+    ctx.emit('dispose');
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('persists settings, reloads them, and removes the API on disposal', async () => {
