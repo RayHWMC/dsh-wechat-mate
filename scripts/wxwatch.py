@@ -25,7 +25,7 @@ import sys
 import time
 import tempfile
 from collections import OrderedDict
-from wxlock import display_lock
+from wxlock import display_lock, watcher_lock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -95,9 +95,17 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--interval", type=float, default=1.5, help="poll interval in seconds")
     ap.add_argument("--probe", type=float, help="exit after N seconds")
+    ap.add_argument("--parent-pid", type=int, help="exit when this owning host is no longer the parent")
     args = ap.parse_args()
+    if args.parent_pid is not None and args.parent_pid != os.getppid():
+        return
     if args.interval <= 0 or (args.probe is not None and args.probe <= 0):
         ap.error("interval and probe must be positive")
+    with watcher_lock(__file__):
+        watch(args)
+
+
+def watch(args):
 
     me = args.me or [os.environ.get("WX_ME", "")]
     win = wxread.find_win()
@@ -109,6 +117,9 @@ def main():
     print(f"[wxwatch] watching {win}, polling every {args.interval}s", file=sys.stderr, flush=True)
 
     while True:
+        if args.parent_pid is not None and args.parent_pid != os.getppid():
+            print('[wxwatch] owning host exited; stopping', file=sys.stderr, flush=True)
+            break
         if args.probe and time.time() - started > args.probe:
             break
         time.sleep(args.interval)
@@ -153,6 +164,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Never terminate another profile's process; only one watcher owns a display.
-    with display_lock("watcher", blocking=False):
-        main()
+    main()

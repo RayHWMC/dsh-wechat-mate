@@ -14,6 +14,9 @@ async function fixture(followup, admit = true) {
   child.stderr = new PassThrough();
   child.kill = () => { child.killed = true; };
   const calls = [], sends = [], warnings = [];
+  ctx.get = service => service === 'agentPresets' ? {
+    resolve: async () => ({ id: 'standard' }), mount: () => () => {},
+  } : undefined;
   const turns = new Map();
   function admitMessage(sid, message) {
     const turn = (turns.get(sid) ?? 0) + 1;
@@ -23,7 +26,9 @@ async function fixture(followup, admit = true) {
   }
   ctx.agents = {
     get: () => null, resume: async () => { throw Error('not saved'); },
-    create: async ({ sessionId }) => {
+    create: async ({ sessionId, setup }) => {
+      // A mount disposer is not a valid setup commit object on the actual host.
+      assert.equal(await setup?.({}), undefined);
       calls.push(['create', sessionId]);
       return { agent: { followup: async message => {
         calls.push(['followup', sessionId, message]);
@@ -34,7 +39,10 @@ async function fixture(followup, admit = true) {
   };
   const cfg = { ...DEFAULTS, me: ['Alice', '小王'] };
   const io = {
-    spawn: (_cmd, args) => { child.args = args; return child; },
+    spawn: (cmd, args) => {
+      assert.notEqual(cmd, 'pkill', 'startup must never kill processes by name');
+      child.args = args; return child;
+    },
     execFile: (_cmd, args, _opts, callback) => {
       sends.push(args); queueMicrotask(() => callback(null));
       return new EventEmitter();
@@ -64,7 +72,7 @@ test('isolates chats, serializes each conversation, and targets verified destina
     ['--to', 'Alice', '--expect-chat', 'Alice', '--text', 'reply A'],
   ]);
   assert.equal(f.calls.filter(c => c[0] === 'followup').length, 3);
-  assert.deepEqual(f.child.args.slice(1), ['--me', 'Alice', '--me', '小王']);
+  assert.deepEqual(f.child.args.slice(1), ['--parent-pid', String(process.pid), '--me', 'Alice', '--me', '小王']);
   f.runtime.dispose();
 });
 
