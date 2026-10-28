@@ -1,0 +1,53 @@
+{
+  "name": "@rayhwmc/dsh-wechat-mate",
+  "version": "0.2.0",
+  "description": "Local WeChat X11 bridge and desktop settings panel for DeepSeek Harness",
+  "type": "module",
+  "main": "plugin/index.js",
+  "exports": {
+    ".": "./plugin/index.js",
+    "./client": "./plugin/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "plugin/*.js",
+    "scripts/*.py",
+    "scripts/*.sh",
+    "systemd",
+    "wxctl.c",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check:package": "node scripts/check-package.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RayHWMC/dsh-wechat-mate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RayHWMC/dsh-wechat-mate/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "wechat",
+    "deepseek-harness"
+  ],
+  "license": "MIT"
+}

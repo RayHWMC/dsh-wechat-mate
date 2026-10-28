@@ -80,10 +80,25 @@ the steady state is a cheap pixel hash.
 > `org.freedesktop.Notifications.Notify` on incoming messages (the strings are in the binary, but the call
 > is not made), so listening on D-Bus does not work. OCR is the fallback that actually works.
 
-## DSH plugin (`plugin/`)
+## DSH desktop plugin
 
-A minimal DSH plugin that wires the bridge into DSH as a channel: inbound events wake a
-dedicated session, and the assistant's reply is sent back to WeChat at `turn/end`.
+The plugin connects the bridge as a DSH channel. Install the repository root package
+with your profile's plugin manager (or add the local root package to that profile).
+The root `package.json` supplies the host entry, client entry and `dsh.bundle` patch.
+Do not install the `plugin/` subdirectory as a separate package.
+
+Open **Settings → WeChat Mate** to configure the bridge directory, Python interpreter,
+X11 display, nicknames, workspace and model. **Save settings** persists the values and
+restarts the owned watcher. The bundled patch starts disabled until you enable it.
+The status card shows whether the watcher is starting, receiving, stopped or failed,
+plus accepted/sent/queued counts and the last error. A Linux host is required for the
+bridge; on Windows/macOS the panel remains available and reports that requirement.
+
+Settings live under `$DSH_HOME/storages/dsh-wechat-mate/` (default `~/.dsh`), in a file
+derived from the initial repository path and session prefix. Saved values override
+the loader config on restart. Use a distinct initial session prefix for each plugin
+instance. This local settings endpoint uses DSH's web server; keep that server bound
+to loopback or protected by your own authenticated proxy.
 
 ```text
 wxwatch.py ──event──► ensureAgent() ──followup──► DSH agent ──turn/end──► wxsend.py ──► WeChat
@@ -93,8 +108,8 @@ Register it in the profile (`~/.dsh/profiles/<profile>/cordis.patch.yml`):
 
 ```yaml
 - insert:
-    - id: im-wechat
-      name: '@yourscope/dsh-wechat-mate'
+    - id: '@rayhwmc/dsh-wechat-mate'
+      name: '@rayhwmc/dsh-wechat-mate'
       config:
         repo: '/path/to/dsh-wechat-mate'
         python: '/path/to/venv/bin/python'   # interpreter with rapidocr-onnxruntime
