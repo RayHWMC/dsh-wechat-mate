@@ -39,6 +39,9 @@ class MediaTests(unittest.TestCase):
         outgoing = scene(False)
         outgoing.paste(photo().resize((160,140)), (650,320))
         self.assertEqual(wxmedia.find_bubbles(outgoing), [])
+        wide = scene(False)
+        wide.paste(photo().resize((450,140)), (356,320))
+        self.assertEqual(wxmedia.find_bubbles(wide), [])  # Ambiguous wide/outgoing geometry.
 
     def test_baseline_deduplication_replacement_and_newer_text(self):
         tracker = wxmedia.MediaTracker()

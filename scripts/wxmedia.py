@@ -51,11 +51,14 @@ def find_bubbles(image):
         # Incoming photos start near the left content edge; outgoing ones end at
         # the right avatar. Avoid avatars, controls, short text, and the input box.
         box = (left+x0*scale, top+y0*scale, min(right, left+x1*scale), min(bottom, top+y1*scale))
-        if box[2]-box[0] < 80 or box[3]-box[1] < 64 or box[0] > 420 or box[2] > image.width-65:
+        if not 80 <= box[2]-box[0] <= 340 or box[3]-box[1] < 64 or box[0] > 420 or box[2] > image.width-65:
             continue
         coverage = ImageStat.Stat(ink.crop((x0, y0, x1, y1))).mean[0] / 255
         sample = image.crop(box).resize(SAMPLE)
         colors = {tuple(c//8 for c in pixel) for pixel in _pixels(sample)}
+        green = sum(g > 190 and 110 < r < 190 and b < 160 for r, g, b in _pixels(sample))/(SAMPLE[0]*SAMPLE[1])
+        if green > 0.35:
+            continue
         if coverage < 0.55 or len(colors) < 16 or sum(ImageStat.Stat(sample).stddev) < 45:
             continue
         raw = sample.tobytes()
