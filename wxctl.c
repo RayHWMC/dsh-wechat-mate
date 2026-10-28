@@ -266,6 +266,15 @@ int main(int argc, char **argv) {
         if (argc < 5) die("need winid x y [button]");
         click((Window)strtoul(argv[2], NULL, 0), atoi(argv[3]), atoi(argv[4]),
               argc > 5 ? atoi(argv[5]) : 1);
+    } else if (!strcmp(cmd, "geom")) {
+        if (argc < 3) die("need window id");
+        Window w = (Window)strtoul(argv[2], NULL, 0);
+        XWindowAttributes a;
+        int rx = 0, ry = 0;
+        Window child;
+        if (!XGetWindowAttributes(dpy, w, &a)) die("bad window");
+        XTranslateCoordinates(dpy, w, DefaultRootWindow(dpy), 0, 0, &rx, &ry, &child);
+        printf("%d %d %d %d\n", rx, ry, a.width, a.height);
     } else if (!strcmp(cmd, "shot")) {
         if (argc < 4) die("need window id and output path");
         Window w = strcmp(argv[2], "root") ? (Window)strtoul(argv[2], NULL, 0) : DefaultRootWindow(dpy);

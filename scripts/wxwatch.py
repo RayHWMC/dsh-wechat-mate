@@ -45,6 +45,9 @@ def list_hash(win):
     sh("shot", win, ppm)
     from PIL import Image
     img = Image.open(ppm).convert("L").crop(LIST_REGION)
+    # 二值化：只保留文字笔画，忽略「选中高亮/未读底色」这类背景变化，
+    # 否则点开会话造成的底色变化会自己触发自己，形成点开-关闭的死循环
+    img = img.point(lambda p: 255 if p < 140 else 0)
     return hashlib.md5(img.tobytes()).hexdigest()
 
 
@@ -74,16 +77,21 @@ def main():
         last = cur
         time.sleep(0.8)                       # 等界面稳定
         sh("activate", win)
-        sh("click", win, *TOP_ROW)
-        time.sleep(1.0)
         try:
             chat = wxread.read_chat(win)
+            if not chat.get("chat"):          # 聊天区没开，点开最新会话
+                sh("click", win, *TOP_ROW)
+                time.sleep(1.2)
+                chat = wxread.read_chat(win)
         except Exception as e:                # noqa: BLE001
             print(f"[wxwatch] 读取失败: {e}", file=sys.stderr, flush=True)
             last = list_hash(win)
             continue
         last = list_hash(win)                 # 读完后重新基线（选中态会改列表）
 
+        if args.verbose:
+            print(f"[wxwatch] 读到会话 {chat.get('chat')!r}：{len(chat.get('messages', []))} 条",
+                  file=sys.stderr, flush=True)
         is_group = chat.get("is_group")
         for m in chat.get("messages", []):
             if m["dir"] != "in":

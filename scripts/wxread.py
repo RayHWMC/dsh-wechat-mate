@@ -27,10 +27,23 @@ TS_LINE = re.compile(r"^(\d{1,2}:\d{2}|昨天(\s*\d{1,2}:\d{2})?|星期[一二�
                      r"\d{4}年\d{1,2}月\d{1,2}日.*|.+(撤回了一条消息|加入了群聊|邀请.*加入).*)$")
 
 
+def _env():
+    return dict(os.environ, DISPLAY=os.environ.get("WX_DISPLAY", ":99"))
+
+
 def shot(win, path):
-    env = dict(os.environ, DISPLAY=os.environ.get("WX_DISPLAY", ":99"))
-    subprocess.run([WXCTL, "shot", win, path], check=True, env=env,
-                   stdout=subprocess.DEVNULL)
+    """截 root 再按窗口矩形裁（直接截窗口会漏掉子窗口，比如聊天区）"""
+    env = _env()
+    out = subprocess.run([WXCTL, "geom", win], capture_output=True, text=True, env=env).stdout.split()
+    if len(out) != 4:
+        subprocess.run([WXCTL, "shot", win, path], check=True, env=env, stdout=subprocess.DEVNULL)
+        return path
+    x, y, w, h = map(int, out)
+    raw = path + ".root.ppm"
+    subprocess.run([WXCTL, "shot", "root", raw], check=True, env=env, stdout=subprocess.DEVNULL)
+    from PIL import Image
+    Image.open(raw).crop((x, y, x + w, y + h)).save(path)
+    return path
 
 
 def find_win():
