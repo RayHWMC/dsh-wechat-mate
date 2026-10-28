@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot installer for the headless WeChat bridge: builds wxctl, fetches Xvfb and
+# One-shot installer for the headless WeChat bridge: builds Rust wxctl, fetches Xvfb and
 # installs the systemd --user units.
 # No root required: Xvfb is fetched with `apt-get download` and unpacked with `dpkg -x`
 # into ~/.local/opt/wxbot.
@@ -12,7 +12,9 @@ DISPLAY_NUM="${WX_DISPLAY_NUM:-99}"
 RES="${WX_RESOLUTION:-1440x900}"
 
 echo "==> 1/4 building wxctl"
-gcc -O2 -o "$ROOT/wxctl" "$ROOT/wxctl.c" -lX11 -lXtst
+command -v cargo >/dev/null || { echo "Rust 1.75+ and Cargo are required (https://rustup.rs)" >&2; exit 1; }
+cargo build --manifest-path "$ROOT/Cargo.toml" --release --locked --target-dir "$ROOT/target"
+install -m 755 "$ROOT/target/release/wxctl" "$ROOT/wxctl"
 
 echo "==> 2/4 preparing Xvfb (no root) -> $PREFIX"
 mkdir -p "$PREFIX"

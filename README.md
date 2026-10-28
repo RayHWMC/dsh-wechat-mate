@@ -19,7 +19,9 @@ Using this project carries the risk of your WeChat account being banned; you mus
 
 ## Installation
 
-Dependencies: Linux + X11 + gcc + `libX11`/`libXtst` development headers; WeChat Linux client installed.
+Dependencies: Linux + X11 with XTEST + Rust 1.75 or later (Cargo and a system linker);
+WeChat Linux client installed. The native helper uses `x11rb` and needs no Xlib
+development headers. The installer uses `apt-get download` and `dpkg` to unpack Xvfb.
 For receiving: Python 3 + `rapidocr-onnxruntime` (see below).
 
 ```bash
@@ -80,10 +82,25 @@ the steady state is a cheap pixel hash.
 > `org.freedesktop.Notifications.Notify` on incoming messages (the strings are in the binary, but the call
 > is not made), so listening on D-Bus does not work. OCR is the fallback that actually works.
 
-## DSH plugin (`plugin/`)
+## DSH desktop plugin
 
-A minimal DSH plugin that wires the bridge into DSH as a channel: inbound events wake a
-dedicated session, and the assistant's reply is sent back to WeChat at `turn/end`.
+The plugin connects the bridge as a DSH channel. Install the repository root package
+with your profile's plugin manager (or add the local root package to that profile).
+The root `package.json` supplies the host entry, client entry and `dsh.bundle` patch.
+Do not install the `plugin/` subdirectory as a separate package.
+
+Open **Settings → WeChat Mate** to configure the bridge directory, Python interpreter,
+X11 display, nicknames, workspace and model. **Save settings** persists the values and
+restarts the owned watcher. The bundled patch starts disabled until you enable it.
+The status card shows whether the watcher is starting, receiving, stopped or failed,
+plus accepted/sent/queued counts and the last error. A Linux host is required for the
+bridge; on Windows/macOS the panel remains available and reports that requirement.
+
+Settings live under `$DSH_HOME/storages/dsh-wechat-mate/` (default `~/.dsh`), in a file
+derived from the initial repository path and session prefix. Saved values override
+the loader config on restart. Use a distinct initial session prefix for each plugin
+instance. This local settings endpoint uses DSH's web server; keep that server bound
+to loopback or protected by your own authenticated proxy.
 
 ```text
 wxwatch.py ──event──► ensureAgent() ──followup──► DSH agent ──turn/end──► wxsend.py ──► WeChat
@@ -93,8 +110,8 @@ Register it in the profile (`~/.dsh/profiles/<profile>/cordis.patch.yml`):
 
 ```yaml
 - insert:
-    - id: im-wechat
-      name: '@yourscope/dsh-wechat-mate'
+    - id: '@rayhwmc/dsh-wechat-mate'
+      name: '@rayhwmc/dsh-wechat-mate'
       config:
         repo: '/path/to/dsh-wechat-mate'
         python: '/path/to/venv/bin/python'   # interpreter with rapidocr-onnxruntime
@@ -113,6 +130,8 @@ Notes:
 * `resume` is tried before `create` (a session may exist on disk but not in memory).
 * Each conversation has a separate session derived from `sessionId`; messages in one
   chat wait for its current turn to finish. The queue holds at most 100 events.
+* Replies are correlated with the exact user-message ID and its admitted turn.
+  Earlier desktop turns and incomplete/error/cancelled output are not relayed.
 * Replies use `--to` and `--expect-chat`. OCR must confirm the exact chat title before
   pasting and before pressing Enter. An uncertain destination fails without sending.
 * All cooperating watchers/senders share a per-display Linux file lock. One watcher
@@ -129,11 +148,35 @@ Notes:
 node --test tests/*.test.js
 python3 -m unittest discover -s tests -p 'test_*.py'
 bash -n scripts/install.sh scripts/wxlogin.sh
+cargo test --locked
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+# Native integration test in a disposable display (requires Xvfb and xauth):
+xvfb-run -a -s '-screen 0 800x600x24 -nolisten tcp' cargo test --locked --test x11 -- --ignored --test-threads=1
 ```
 
 These tests use simulated process and OCR results. Sending still depends on the
 Linux WeChat UI layout, exact OCR titles, and an already logged-in client. Chat titles
 are not unique account identifiers: avoid duplicate contact/group display names.
+
+## Rust native helper
+
+`wxctl` is implemented in safe Rust (`#![forbid(unsafe_code)]`) using the X11/XTEST
+protocol through `x11rb`. `cargo build --release --locked` builds it; the installer
+copies the result to the existing `./wxctl` path, so Python callers and the `WXCTL`
+override keep working. `Cargo.lock` fixes the dependency versions.
+
+The CLI preserves `find`, `activate`, `key`, `type`, `clip`, `click`, `geom`, and
+`shot`. `type` accepts ASCII; Unicode uses `clip` plus `key ctrl+v`. Clipboard ownership
+lasts 1–3600 seconds and is ready before `clip` returns; a newer owner ends the old
+process. Screenshots are binary PPM on TrueColor displays (including 16/24/32-bit pixel
+storage), with X11 byte order, color masks and row padding respected. Invalid inputs,
+unavailable keys/windows, and output errors exit nonzero.
+
+The Xvfb test creates a mock window and verifies discovery, geometry, keyboard and
+mouse events, released modifiers, screenshot RGB bytes, and Unicode clipboard transfer.
+It does not use an actual WeChat account. Python remains for RapidOCR and UI policy;
+JavaScript remains for DSH's host and browser plugin contracts.
 
 ## License
 

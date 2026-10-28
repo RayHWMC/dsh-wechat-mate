@@ -7,3 +7,6 @@
 *.png
 __pycache__/
 .venv/
+node_modules/
+*.tgz
+/target/

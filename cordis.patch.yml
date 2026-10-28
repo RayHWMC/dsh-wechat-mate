@@ -1,0 +1,5 @@
+- insert:
+    - id: '@rayhwmc/dsh-wechat-mate'
+      name: '@rayhwmc/dsh-wechat-mate'
+      config:
+        enabled: false

@@ -1,0 +1,15 @@
+[package]
+name = "wxctl"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Safe X11 automation helper for the local WeChat bridge"
+license = "MIT"
+repository = "https://github.com/RayHWMC/dsh-wechat-mate"
+
+[dependencies]
+x11rb = { version = "0.13.2", features = ["xtest"] }
+
+[profile.release]
+lto = true
+strip = true
