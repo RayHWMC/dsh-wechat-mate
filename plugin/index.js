@@ -28,7 +28,7 @@ export function validEvent(event) {
 
 export async function apply(ctx, config) {
   const log = ctx.logger ?? console;
-  try { return await createPanelHost(ctx, { ...DEFAULTS, enabled: true, ...config }, log, start); }
+  try { await createPanelHost(ctx, { ...DEFAULTS, enabled: true, ...config }, log, start); }
   catch (error) { log.error?.(`[im-wechat] startup failed: ${error.message}`); }
 }
 
@@ -80,7 +80,10 @@ export async function start(ctx, cfg, log, io = { spawn, execFile }) {
       const handle = await ctx.agents.create({ sessionId: sid,
         meta: { cwd: cfg.cwd, ...(preset?.id ? { agentPreset: preset.id } : {}) },
         agentOptions: { provider: cfg.provider, model: cfg.model },
-        ...(preset?.id ? { setup: agentCtx => presets.mount(agentCtx, preset.id) } : {}),
+        // The host does `(await setup?.(...))?.commit()`, so setup must resolve to
+        // undefined (or a transaction with commit). presets.mount() returns a
+        // disposer function, which made that call throw "?.commit is not a function".
+        ...(preset?.id ? { setup: async agentCtx => { await presets.mount(agentCtx, preset.id); } } : {}),
       });
       agent = handle?.agent;
       if (handle?.dispose) ownedAgents.add(handle);
@@ -180,6 +183,14 @@ export async function start(ctx, cfg, log, io = { spawn, execFile }) {
       }
     } finally { draining = false; }
   }
+
+  // A watcher started by a previous host run can survive a restart and keep the
+  // watcher lock, which makes the fresh instance exit(1) immediately. Kill stale
+  // watchers for this bridge before starting a new one.
+  try {
+    const cleaner = io.spawn('pkill', ['-f', 'dsh-wechat-mate/scripts/wxwatch.py'], { stdio: 'ignore' });
+    cleaner?.on?.('error', () => {});
+  } catch { /* pkill missing: harmless */ }
 
   const child = io.spawn(cfg.python,
     [join(cfg.repo, 'scripts/wxwatch.py'), ...cfg.me.filter(n => n.trim()).flatMap(n => ['--me', n])],
