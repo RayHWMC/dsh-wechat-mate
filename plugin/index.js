@@ -1,7 +1,8 @@
 import { spawn, execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { open } from 'node:fs/promises';
+import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { createPanelHost } from './panel.js';
@@ -16,14 +17,34 @@ export const DEFAULTS = {
 };
 
 export function sessionIdFor(cfg, event) {
-  const key = JSON.stringify([event.kind === 'dm' ? 'dm' : 'group', event.chat]);
+  const key = JSON.stringify([event.chatType ?? (event.kind === 'dm' ? 'dm' : 'group'), event.chat]);
   return `${cfg.sessionId}-${createHash('sha256').update(key).digest('hex').slice(0, 24)}`;
 }
 
 export function validEvent(event) {
-  return event?.wake === true && ['dm', 'group_mention'].includes(event.kind)
-    && typeof event.chat === 'string' && !!event.chat.trim()
-    && typeof event.text === 'string' && !!event.text.trim();
+  if (event?.wake !== true || typeof event.chat !== 'string' || !event.chat.trim()) return false;
+  if (event.kind === 'image') return ['dm', 'group'].includes(event.chatType)
+    && typeof event.path === 'string' && isAbsolute(event.path) && /\.png$/i.test(event.path)
+    && (event.text === undefined || typeof event.text === 'string');
+  return ['dm', 'group_mention'].includes(event.kind) && typeof event.text === 'string' && !!event.text.trim();
+}
+
+export async function eventText(event) {
+  const kind = (event.chatType ?? (event.kind === 'dm' ? 'dm' : 'group')) === 'dm' ? 'direct message' : 'group message';
+  const prefix = `[WeChat ${kind} | ${event.chat}]`;
+  if (event.kind !== 'image') return `${prefix} ${event.text}`;
+  const file = await open(event.path, 'r');
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size < 33 || stat.size > 20*1024*1024) throw Error('invalid image file size');
+    const header = Buffer.alloc(24);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    if (bytesRead !== header.length || !header.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
+        || header.toString('ascii', 12, 16) !== 'IHDR' || !header.readUInt32BE(16) || !header.readUInt32BE(20)) {
+      throw Error('image event does not point to a PNG');
+    }
+  } finally { await file.close(); }
+  return `${prefix} Image captured from the WeChat preview and saved at ${JSON.stringify(event.path)}. Open this PNG to inspect the image.${event.text ? `\nCaption/OCR: ${event.text}` : ''}`;
 }
 
 export async function apply(ctx, config) {
@@ -164,12 +185,12 @@ export async function start(ctx, cfg, log, io = { spawn, execFile }) {
         const sid = sessionIdFor(cfg, ev);
         const request = { chat: ev.chat, text: '', turn: null, candidateTurn: null, interrupted: false };
         try {
+          const text = await eventText(ev);
           const agent = await ensureAgent(sid);
           if (disposed) break;
           pending.set(sid, request);
-          const kind = ev.kind === 'dm' ? 'direct message' : 'group message';
           const message = createUserMessage({
-            content: [{ type: 'text', text: `[WeChat ${kind} | ${ev.chat}] ${ev.text}\n\nReply with the answer only; the plugin sends it to the source chat.` }],
+            content: [{ type: 'text', text: `${text}\n\nReply with the answer only; the plugin sends it to the source chat.` }],
             source: { kind: 'user' },
           });
           request.id = message.id;

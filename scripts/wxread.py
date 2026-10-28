@@ -75,13 +75,13 @@ def is_green(px):
     return g > 190 and 110 < r < 190 and b < 160
 
 
-def read_chat(win=None, verbose=False):
+def read_chat(win=None, verbose=False, media=False):
     from PIL import Image
-    from rapidocr_onnxruntime import RapidOCR
 
     win = win or find_win()
     global _ocr
     if _ocr is None:
+        from rapidocr_onnxruntime import RapidOCR
         _ocr = RapidOCR()
     with tempfile.TemporaryDirectory(prefix="wxread-") as directory:
         ppm = os.path.join(directory, "chat.ppm")
@@ -89,8 +89,12 @@ def read_chat(win=None, verbose=False):
         with Image.open(ppm) as image:
             img = image.convert("RGB")
         res, _ = _ocr(ppm)
+    media_info = {}
+    if media:
+        from wxmedia import find_bubbles
+        media_info = {'media': find_bubbles(img), 'last_text_y': 0}
     if not res:
-        return {"chat": "", "is_group": False, "messages": []}
+        return {"chat": "", "is_group": False, "messages": [], **media_info}
 
     title, msgs = "", []
     for box, text, score in res:
@@ -125,11 +129,13 @@ def read_chat(win=None, verbose=False):
         else:
             merged.append(dict(m))
     is_group = bool(re.search(r"\(\d+\)\s*$", title))
+    if media:
+        media_info['last_text_y'] = max((m['y'] for m in msgs), default=0)
     if verbose:
         print(json.dumps({"chat": title, "is_group": is_group, "messages": merged},
                          ensure_ascii=False, indent=2))
     return {"chat": title, "is_group": is_group,
-            "messages": [{"dir": m["dir"], "text": m["text"]} for m in merged]}
+            "messages": [{"dir": m["dir"], "text": m["text"]} for m in merged], **media_info}
 
 
 def main():

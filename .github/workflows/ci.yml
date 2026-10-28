@@ -17,6 +17,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: node --test tests/*.test.js
+      - run: python -m pip install 'Pillow>=10,<13'
       - run: python -m unittest discover -s tests -p 'test_*.py'
       - run: bash -n scripts/install.sh scripts/wxlogin.sh
       - run: npm run check:package
@@ -27,7 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: sudo apt-get update && sudo apt-get install -y xvfb xauth
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xauth python3-pil
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
